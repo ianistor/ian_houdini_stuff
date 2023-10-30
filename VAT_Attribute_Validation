@@ -1,0 +1,35 @@
+// Check if input geometry has required attributes
+int hasP = haspointattrib(0, "P");
+int hasN = haspointattrib(0, "N");
+int hasName = haspointattrib(0, "name");
+int hasOrient = haspointattrib(0, "orient");
+int hasPivot = haspointattrib(0, "pivot");
+
+string missingAttributes = "";
+
+if (!hasP) {
+    missingAttributes += "P ";
+}
+
+if (!hasN) {
+    missingAttributes += "N ";
+}
+
+if (!hasName) {
+    missingAttributes += "name ";
+}
+
+if (!hasOrient) {
+    missingAttributes += "orient ";
+}
+
+if (!hasPivot) {
+    missingAttributes += "pivot ";
+}
+
+// Set an output string attribute indicating missing attributes
+s@missingAttributes = missingAttributes;
+
+// Debug statement to print missingAttributes
+printf("missingAttributes: %s\n", missingAttributes);
+
