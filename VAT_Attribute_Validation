@@ -1,6 +1,6 @@
 // Check if input geometry has required attributes
 int hasP = haspointattrib(0, "P");
-int hasN = haspointattrib(0, "N");
+int hasN = hasvertexattrib(0, "N");
 int hasName = haspointattrib(0, "name");
 int hasOrient = haspointattrib(0, "orient");
 int hasPivot = haspointattrib(0, "pivot");
@@ -27,9 +27,13 @@ if (!hasPivot) {
     missingAttributes += "pivot ";
 }
 
+// Check if all required attributes are found
+if (hasP && hasN && hasName && hasOrient && hasPivot) {
+    missingAttributes = "Passed";
+}
+
 // Set an output string attribute indicating missing attributes
-s@missingAttributes = missingAttributes;
+s@VAT_Validation = missingAttributes;
 
 // Debug statement to print missingAttributes
 printf("missingAttributes: %s\n", missingAttributes);
-
