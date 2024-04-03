@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<shelfDocument>
+  <!-- This file contains definitions of shelves, toolbars, and tools.
+ It should not be hand-edited when it is being used by the application.
+ Note, that two definitions of the same element are not allowed in
+ a single file. -->
+
+  <toolshelf name="Nistor tools shed" label="IANistor Tools">
+    <memberTool name="ImportFile"/>
+    <memberTool name="SplitByGroupName"/>
+  </toolshelf>
+
+  <tool name="ImportFile" label="ImportTransform" icon="PLASMA_App">
+    <script scriptType="python"><![CDATA[import hou
+
+# Get the current node in the network editor
+current_node = hou.ui.paneTabOfType(hou.paneTabType.NetworkEditor).pwd()
+
+
+# Create a File node
+file_node = current_node.createNode('file')
+
+# Get the position of the current node
+current_pos = current_node.position()
+
+# Set the position of the File node relative to the current node
+file_pos = hou.Vector2(current_pos[0] - 3, current_pos[1] - 2)
+file_node.setPosition(file_pos)
+
+# Create a Transform node
+xform_node = current_node.createNode('xform')
+
+# Seting Transform node
+xform_pos = hou.Vector2(file_pos[0], file_pos[1] - 2)
+xform_node.setPosition(xform_pos)
+xform_node.parm("scale").set("0.01")  
+
+# Connect the Transform node to the File node
+xform_node.setInput(0, file_node)
+
+]]></script>
+  </tool>
+
+  <tool name="SplitByGroupName" label="AutoSplitByGroupName" icon="C:/Program Files/Side Effects Software/sidefx_packages/SideFXLabs19.5/help/icons/polyslice.svg">
+    <script scriptType="python"><![CDATA[import os
+
+if(len(hou.selectedNodes())==0):
+    hou.ui.displayMessage("No Nodes Selected")
+    
+else:
+    node = hou.selectedNodes()[0]
+    geo = node.geometry()
+    full_path = os.path.dirname(node.path()) 
+    pos = node.position()
+    groups = geo.primGroups()
+    
+    x = -3
+    for group in groups:
+        x += 3
+        name = group.name() 
+        next_pos=[pos[0]+x, pos[1]-2]
+        blast_node=hou.node(full_path).createNode("blast","isolate_"+name)
+        blast_node.setFirstInput(node)
+        blast_node.setPosition(next_pos)
+        blast_node.parm("group").set(name)
+        blast_node.parm("negate").set(1)
+        output_pos=[pos[0]+x, pos[1]-3]
+        output=hou.node(full_path).createNode("null","OUT_"+name)
+        output.setPosition(output_pos)
+        output.setInput(0, blast_node)
+        output.setColor(hou.Color((0.4,0.4,0.4)))]]></script>
+    <keywordList>
+      <keyword>split by group name blast</keyword>
+    </keywordList>
+  </tool>
+</shelfDocument>
