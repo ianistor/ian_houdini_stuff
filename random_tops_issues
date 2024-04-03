@@ -1,4 +1,15 @@
-If TOP cache is not writing to disk change from ROP Fetch > Cache Mode > Write Files
+• If TOP cache is not writing to disk change from ROP Fetch > Cache Mode > Write Files
+
+
+
+# This is needed so we can format the float value.
+
+Wrangle node attribwrangle1:
+
+// Get the cluster size attribute as a string
+float target = `pdgattrib("cluster_size", 0)`;
+s@target = sprintf("%.3f", target);
+
 
 
 Overlay Syntax
