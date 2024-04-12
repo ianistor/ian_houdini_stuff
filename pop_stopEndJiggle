@@ -1,0 +1,15 @@
+// wrangle code for rbd end of sim jitter
+
+// If speed and torque are less than a value reduce the torque
+
+f@speed=length(v@v);
+
+if(f@speed<ch('threshold_speed')){
+    v@w=0.98;
+}
+
+// If the speed is less than .1
+// stop the objects by making them inactive
+if (@speed < .4 && @Frame > 90 ) {
+    @active = 0;
+}
