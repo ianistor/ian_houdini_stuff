@@ -1,4 +1,4 @@
-#For less "classic voronoi" fractures#
+# For less "classic voronoi" fractures
 
 use a transform node with deformation before the Material Fracture
 Later change transform back to original.
