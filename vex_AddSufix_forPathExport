@@ -1,0 +1,7 @@
+int primCount = nprimitives(0);
+for (int i = 0; i < primCount; ++i) {
+    string currentPath = primattrib(0, "path", i, 0);
+    string newPath = currentPath + "_LOD";
+    // Modify the path attribute to the custom string
+    setprimattrib(0, "path", i, newPath, "set");
+}
