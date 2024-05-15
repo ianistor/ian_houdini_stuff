@@ -1,0 +1,2 @@
+if(@area < 0.5)
+removeprim(geoself(), @primnum, 1);
