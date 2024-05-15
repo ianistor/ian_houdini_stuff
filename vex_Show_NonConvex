@@ -1,0 +1,32 @@
+// Initialize the nonConvex flag to 0 (convex)
+int nonConvex = 0;
+
+// Calculate the normal of the primitive using the first three vertices
+vector p0 = point(0, "P", vertexpoint(0, vertexindex(0, @primnum, 0)));
+vector p1 = point(0, "P", vertexpoint(0, vertexindex(0, @primnum, 1)));
+vector p2 = point(0, "P", vertexpoint(0, vertexindex(0, @primnum, 2)));
+vector nml = normalize(cross(p1 - p0, p2 - p1));
+
+// Loop through the vertices of the primitive
+int numvtx = primvertexcount(0, @primnum);
+for (int i = 0; i < numvtx; i++) {
+    p0 = point(0, "P", vertexpoint(0, vertexindex(0, @primnum, i)));
+    p1 = point(0, "P", vertexpoint(0, vertexindex(0, @primnum, (i + 1) % numvtx)));
+    p2 = point(0, "P", vertexpoint(0, vertexindex(0, @primnum, (i + 2) % numvtx)));
+    
+    // Calculate the cross product of the edges
+    vector cross = cross(p1 - p0, p2 - p1);
+    
+    // If the dot product of the normal and the cross product is negative, it's non-convex
+    if (dot(nml, cross) < 0) {
+        nonConvex = 1;
+        break;
+    }
+}
+
+// Set the color based on the convexity test
+if (nonConvex) {
+    setprimattrib(0, "Cd", @primnum, {1, 0, 0}, "set"); // Red for non-convex
+} else {
+    setprimattrib(0, "Cd", @primnum, {0, 1, 0}, "set"); // Green for convex
+}
