@@ -53,6 +53,8 @@ else:
     full_path = os.path.dirname(node.path()) 
     pos = node.position()
     groups = geo.primGroups()
+    if len(groups)==0:
+        hou.ui.displayMessage("No Groups present, nothing to split")
     
     x = -3
     for group in groups:
