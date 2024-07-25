@@ -1,0 +1,32 @@
+float maxDistance = ch('max_distance'); // Maximum distance from origin, now as a channel parameter
+vector origin = {0,0,0}; // Center of your restricted area
+
+vector pos = @P;
+vector vel = v@v;
+
+float dist = length(pos - origin);
+
+if (dist > maxDistance) {
+    // Calculate direction back to the center
+    vector dir = normalize(origin - pos);
+    
+    // Adjust velocity to push back towards center
+    float pushStrength = ch('push_str'); // Adjust this value as needed
+    vel += dir * pushStrength * (dist - maxDistance);
+}
+
+// Calculate speed
+f@speed = length(vel);
+
+// If speed is less than threshold, reduce torque
+if (f@speed < ch('threshold_speed')) {
+    v@w = 0.28;
+}
+
+// If speed is very low and we're past frame 50, make object inactive
+if (f@speed < 0.2 && @Frame > 50) {
+    i@active = 0;
+}
+
+// Apply final velocity
+v@v = vel;
