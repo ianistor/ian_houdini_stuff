@@ -1,0 +1,680 @@
+import hou
+import numpy as np
+from PySide2 import QtWidgets, QtCore, QtGui
+
+# Constants
+MAX_POINTS_TO_COMPARE = 100
+MAX_DIFFERENCES_THRESHOLD = 5
+
+def compare_attributes(upstream_attrs, downstream_attrs, attr_type, is_flow_detected=False):
+    """Helper function to compare attributes and avoid code duplication"""
+    differences = []
+    if upstream_attrs != downstream_attrs:
+        lost_attrs = upstream_attrs - downstream_attrs  # What was in upstream but missing in downstream
+        added_attrs = downstream_attrs - upstream_attrs  # What's new in downstream
+        
+        if lost_attrs:
+            # Always show RED for lost/removed attributes
+            attr_list = ', '.join(f"<span style='color:red'>{attr}</span>" for attr in sorted(lost_attrs))
+            if is_flow_detected:
+                differences.append(f"{attr_type} attributes lost downstream: {attr_list}")
+            else:
+                differences.append(f"{attr_type} attributes only in node1: {attr_list}")
+        
+        if added_attrs:
+            # Always show GREEN for added/new attributes
+            attr_list = ', '.join(f"<span style='color:green'>{attr}</span>" for attr in sorted(added_attrs))
+            if is_flow_detected:
+                differences.append(f"{attr_type} attributes added downstream: {attr_list}")
+            else:
+                differences.append(f"{attr_type} attributes only in node2: {attr_list}")
+    return differences
+
+def compare_node_data(node1, node2):
+    """
+    Compare data between two Houdini nodes and return differences
+    """
+    differences = []
+    
+    # Determine node connections
+    try:
+        node1_inputs = set(n.path() for n in node1.inputs() if n is not None)
+        node2_inputs = set(n.path() for n in node2.inputs() if n is not None)
+        
+        if node2.path() in node1_inputs:
+            differences.append("Node 2 feeds into Node 1")
+        elif node1.path() in node2_inputs:
+            differences.append("Node 1 feeds into Node 2")
+        else:
+            # Check for common inputs (branch streams)
+            common_inputs = node1_inputs.intersection(node2_inputs)
+            if common_inputs:
+                differences.append(f"Branch streams from common input: {next(iter(common_inputs))}")
+            else:
+                differences.append("No connection between nodes")
+    except (AttributeError, TypeError) as e:
+        differences.append(f"Could not determine node connections: {str(e)}")
+    
+    # Get geometry from both nodes
+    geo1 = node1.geometry()
+    geo2 = node2.geometry()
+    
+    if not geo1 or not geo2:
+        missing_nodes = [node.path() for node, geo in [(node1, geo1), (node2, geo2)] if not geo]
+        return [f"No geometry in nodes: {', '.join(missing_nodes)}"]
+    
+    # Cache geometry data to avoid repeated calls
+    geo_data1 = {
+        'points': len(geo1.points()),
+        'prims': len(geo1.prims()),
+        'point_attrs': set(attr.name() for attr in geo1.pointAttribs()),
+        'detail_attrs': set(attr.name() for attr in geo1.globalAttribs()),
+        'prim_attrs': set(attr.name() for attr in geo1.primAttribs())
+    }
+    
+    geo_data2 = {
+        'points': len(geo2.points()),
+        'prims': len(geo2.prims()),
+        'point_attrs': set(attr.name() for attr in geo2.pointAttribs()),
+        'detail_attrs': set(attr.name() for attr in geo2.globalAttribs()),
+        'prim_attrs': set(attr.name() for attr in geo2.primAttribs())
+    }
+    
+    # Compare counts
+    if geo_data1['points'] != geo_data2['points']:
+        differences.append(f"Point count differs: {geo_data1['points']} vs {geo_data2['points']}")
+    
+    if geo_data1['prims'] != geo_data2['prims']:
+        differences.append(f"Primitive count differs: {geo_data1['prims']} vs {geo_data2['prims']}")
+    
+    # Determine flow direction for attribute comparison
+    node1_is_upstream = "Node 1 feeds into Node 2" in str(differences)
+    node2_is_upstream = "Node 2 feeds into Node 1" in str(differences)
+    is_flow_detected = node1_is_upstream or node2_is_upstream
+    
+    # Compare attributes: upstream first, downstream second
+    if node1_is_upstream:
+        # Node1 = upstream, Node2 = downstream
+        differences.extend(compare_attributes(geo_data1['point_attrs'], geo_data2['point_attrs'], "Point", is_flow_detected))
+        differences.extend(compare_attributes(geo_data1['detail_attrs'], geo_data2['detail_attrs'], "Detail", is_flow_detected))
+        differences.extend(compare_attributes(geo_data1['prim_attrs'], geo_data2['prim_attrs'], "Primitive", is_flow_detected))
+    elif node2_is_upstream:
+        # Node2 = upstream, Node1 = downstream
+        differences.extend(compare_attributes(geo_data2['point_attrs'], geo_data1['point_attrs'], "Point", is_flow_detected))
+        differences.extend(compare_attributes(geo_data2['detail_attrs'], geo_data1['detail_attrs'], "Detail", is_flow_detected))
+        differences.extend(compare_attributes(geo_data2['prim_attrs'], geo_data1['prim_attrs'], "Primitive", is_flow_detected))
+    else:
+        # No flow detected, assume Node1 as reference (upstream-like)
+        differences.extend(compare_attributes(geo_data1['point_attrs'], geo_data2['point_attrs'], "Point", False))
+        differences.extend(compare_attributes(geo_data1['detail_attrs'], geo_data2['detail_attrs'], "Detail", False))
+        differences.extend(compare_attributes(geo_data1['prim_attrs'], geo_data2['prim_attrs'], "Primitive", False))
+    
+    # Compare common attributes if point counts match
+    if geo_data1['points'] == geo_data2['points']:
+        common_attrs = geo_data1['point_attrs'].intersection(geo_data2['point_attrs'])
+        for attr_name in common_attrs:
+            try:
+                attr1 = geo1.findPointAttrib(attr_name)
+                attr2 = geo2.findPointAttrib(attr_name)
+                
+                if not attr1 or not attr2:
+                    differences.append(f"Could not find attribute '{attr_name}' in one of the nodes")
+                    continue
+                
+                # Compare values with early exit for performance
+                diff_count = 0
+                for i in range(min(geo_data1['points'], MAX_POINTS_TO_COMPARE)):
+                    val1 = geo1.point(i).attribValue(attr1)
+                    val2 = geo2.point(i).attribValue(attr2)
+                    
+                    if isinstance(val1, (list, tuple)) and isinstance(val2, (list, tuple)):
+                        if not np.allclose(val1, val2, rtol=1e-5, atol=1e-8):
+                            diff_count += 1
+                    elif val1 != val2:
+                        diff_count += 1
+                    
+                    if diff_count > MAX_DIFFERENCES_THRESHOLD:
+                        break
+                
+                if diff_count > 0:
+                    suffix = "+" if diff_count > MAX_DIFFERENCES_THRESHOLD else ""
+                    differences.append(f"Attribute '{attr_name}' differs at {diff_count}{suffix} points")
+                else:
+                    differences.append(f"Attribute '{attr_name}' matches in both nodes")
+                    
+            except (AttributeError, ValueError) as e:
+                differences.append(f"Could not compare attribute '{attr_name}': {str(e)}")
+    
+    # If no differences found
+    if not differences:
+        differences.append("No differences found between the nodes")
+    
+    return differences
+
+class CompareNodesDialog(QtWidgets.QDialog):
+    def __init__(self, parent=None):
+        super(CompareNodesDialog, self).__init__(parent)
+        self.setWindowTitle("Node Data Comparison")
+        self.resize(800, 600)  # Initial size, but resizable
+        
+        # Store node references
+        self.node1 = None
+        self.node2 = None
+        
+        # Create layout
+        layout = QtWidgets.QVBoxLayout()
+        
+        # Node selection
+        form_layout = QtWidgets.QFormLayout()
+        
+        # Auto-populate if two nodes are selected, with upstream on left
+        selected_nodes = hou.selectedNodes()
+        default_node1 = ""
+        default_node2 = ""
+        
+        if len(selected_nodes) >= 2:
+            node_a, node_b = selected_nodes[0], selected_nodes[1]
+            # Use same logic as compare_node_data to avoid duplication
+            node_a_inputs = set(n.path() for n in node_a.inputs() if n is not None)
+            node_b_inputs = set(n.path() for n in node_b.inputs() if n is not None)
+            
+            if node_b.path() in node_a_inputs:
+                default_node1, default_node2 = node_b.path(), node_a.path()
+            elif node_a.path() in node_b_inputs:
+                default_node1, default_node2 = node_a.path(), node_b.path()
+            else:
+                default_node1, default_node2 = node_a.path(), node_b.path()
+        
+        self.node1_input = QtWidgets.QLineEdit(default_node1)
+        self.node2_input = QtWidgets.QLineEdit(default_node2)
+        
+        self.node1_btn = QtWidgets.QPushButton("Select...")
+        self.node2_btn = QtWidgets.QPushButton("Select...")
+        
+        node1_layout = QtWidgets.QHBoxLayout()
+        node1_layout.addWidget(self.node1_input)
+        node1_layout.addWidget(self.node1_btn)
+        
+        node2_layout = QtWidgets.QHBoxLayout()
+        node2_layout.addWidget(self.node2_input)
+        node2_layout.addWidget(self.node2_btn)
+        
+        form_layout.addRow("Input Node 1:", node1_layout)
+        form_layout.addRow("Input Node 2:", node2_layout)
+        
+        # Color legend
+        legend_layout = QtWidgets.QHBoxLayout()
+        legend_layout.addWidget(QtWidgets.QLabel("Legend:"))
+        
+        red_box = QtWidgets.QLabel()
+        red_box.setFixedSize(16, 16)
+        red_box.setStyleSheet("background-color: red;")
+        legend_layout.addWidget(red_box)
+        legend_layout.addWidget(QtWidgets.QLabel("Removed/Decreased"))
+        
+        green_box = QtWidgets.QLabel()
+        green_box.setFixedSize(16, 16)
+        green_box.setStyleSheet("background-color: green;")
+        legend_layout.addWidget(green_box)
+        legend_layout.addWidget(QtWidgets.QLabel("Added/Increased"))
+        
+        legend_layout.addStretch(1)
+        
+        # Node info display with splitter
+        self.splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        
+        # Node 1 info
+        self.node1_info = QtWidgets.QGroupBox("")
+        self.node1_info.setContentsMargins(5, 5, 5, 5)
+        node1_info_layout = QtWidgets.QVBoxLayout()
+        node1_info_layout.setSpacing(0)
+        node1_info_layout.setContentsMargins(5, 5, 5, 5)
+        node1_info_layout.setAlignment(QtCore.Qt.AlignTop)
+        
+        # Create horizontal layout for icon and name
+        node1_header_layout = QtWidgets.QHBoxLayout()
+        node1_header_layout.setSpacing(5)
+        node1_header_layout.setContentsMargins(0, 0, 0, 0)
+        
+        self.node1_icon = QtWidgets.QLabel()
+        self.node1_icon.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+        self.node1_icon.setFixedSize(64, 64)
+        self.node1_icon.setStyleSheet("margin: 0px; padding: 0px; border: 0px;")
+        
+        self.node1_name = QtWidgets.QLabel()
+        self.node1_name.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+        self.node1_name.setStyleSheet("font-weight: bold;")
+        
+        node1_header_layout.addWidget(self.node1_icon)
+        node1_header_layout.addWidget(self.node1_name)
+        node1_header_layout.addStretch(1)
+        
+        self.node1_summary = QtWidgets.QTextEdit()
+        self.node1_summary.setReadOnly(True)
+        self.node1_summary.setMinimumHeight(150)
+        self.node1_summary.setStyleSheet("margin-top: 0px; padding-top: 0px;")
+        self.node1_summary.setAcceptRichText(True)
+        
+        # Use a widget to contain the header layout to avoid spacing issues
+        header_widget1 = QtWidgets.QWidget()
+        header_widget1.setLayout(node1_header_layout)
+        header_widget1.setContentsMargins(0, 0, 0, 0)
+        header_widget1.setMaximumHeight(64)
+        
+        node1_info_layout.addWidget(header_widget1)
+        node1_info_layout.addWidget(self.node1_summary, 1)
+        self.node1_info.setLayout(node1_info_layout)
+        
+        # Node 2 info
+        self.node2_info = QtWidgets.QGroupBox("")
+        self.node2_info.setContentsMargins(5, 5, 5, 5)
+        node2_info_layout = QtWidgets.QVBoxLayout()
+        node2_info_layout.setSpacing(0)
+        node2_info_layout.setContentsMargins(5, 5, 5, 5)
+        node2_info_layout.setAlignment(QtCore.Qt.AlignTop)
+        
+        # Create horizontal layout for icon and name
+        node2_header_layout = QtWidgets.QHBoxLayout()
+        node2_header_layout.setSpacing(5)
+        node2_header_layout.setContentsMargins(0, 0, 0, 0)
+        
+        self.node2_icon = QtWidgets.QLabel()
+        self.node2_icon.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+        self.node2_icon.setFixedSize(64, 64)
+        self.node2_icon.setStyleSheet("margin: 0px; padding: 0px; border: 0px;")
+        
+        self.node2_name = QtWidgets.QLabel()
+        self.node2_name.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+        self.node2_name.setStyleSheet("font-weight: bold;")
+        
+        node2_header_layout.addWidget(self.node2_icon)
+        node2_header_layout.addWidget(self.node2_name)
+        node2_header_layout.addStretch(1)
+        
+        self.node2_summary = QtWidgets.QTextEdit()
+        self.node2_summary.setReadOnly(True)
+        self.node2_summary.setMinimumHeight(150)
+        self.node2_summary.setStyleSheet("margin-top: 0px; padding-top: 0px;")
+        self.node2_summary.setAcceptRichText(True)
+        
+        # Use a widget to contain the header layout to avoid spacing issues
+        header_widget2 = QtWidgets.QWidget()
+        header_widget2.setLayout(node2_header_layout)
+        header_widget2.setContentsMargins(0, 0, 0, 0)
+        header_widget2.setMaximumHeight(64)
+        
+        node2_info_layout.addWidget(header_widget2)
+        node2_info_layout.addWidget(self.node2_summary, 1)
+        self.node2_info.setLayout(node2_info_layout)
+        
+        # Add to splitter
+        self.splitter.addWidget(self.node1_info)
+        self.splitter.addWidget(self.node2_info)
+        self.splitter.setSizes([400, 400])  # Equal initial sizes
+        
+        # Hide node info initially
+        self.node1_info.hide()
+        self.node2_info.hide()
+        
+        # Buttons
+        button_layout = QtWidgets.QHBoxLayout()
+        self.compare_btn = QtWidgets.QPushButton("Compare")
+        self.close_btn = QtWidgets.QPushButton("Close")
+        button_layout.addWidget(self.compare_btn)
+        button_layout.addWidget(self.close_btn)
+        
+        # Add all to main layout
+        layout.addLayout(form_layout)
+        layout.addLayout(legend_layout)
+        layout.addWidget(self.splitter, 1)  # Give the splitter stretch priority
+        layout.addLayout(button_layout)
+        
+        self.setLayout(layout)
+        
+        # Connect signals
+        self.node1_btn.clicked.connect(lambda: self.select_node(self.node1_input))
+        self.node2_btn.clicked.connect(lambda: self.select_node(self.node2_input))
+        self.compare_btn.clicked.connect(self.compare_nodes)
+        self.close_btn.clicked.connect(self.close)
+    
+    def select_node(self, line_edit):
+        selection = hou.selectedNodes()
+        if selection:
+            line_edit.setText(selection[0].path())
+    
+    def update_node_info(self, node1, node2, differences=None):
+        """Update the node info display with icons, names, and summaries"""
+        # Show the node info panels
+        self.node1_info.show()
+        self.node2_info.show()
+        
+        # Set node names (just the name, not the version)
+        self.node1_name.setText(node1.name())
+        self.node2_name.setText(node2.name())
+        
+        # Determine network flow and update node names
+        def determine_flow_info(differences, node1, node2):
+            flow_patterns = [
+                ("Node 1 feeds into Node 2", True, False, False, "Upstream", "Downstream"),
+                ("Node 2 feeds into Node 1", False, True, False, "Downstream", "Upstream"),
+                ("Branch streams from common input", False, False, True, "Branch 1", "Branch 2")
+            ]
+            
+            for diff in differences:
+                for pattern, n1_up, n2_up, branch, label1, label2 in flow_patterns:
+                    if pattern in diff:
+                        return diff, n1_up, n2_up, branch, f"{node1.name()} ({label1})", f"{node2.name()} ({label2})"
+                        
+                if "No direct connection" in diff or "No connection between nodes" in diff:
+                    return diff, False, False, False, node1.name(), node2.name()
+            
+            return None, False, False, False, node1.name(), node2.name()
+        
+        network_info, node1_is_upstream, node2_is_upstream, is_branch, name1, name2 = determine_flow_info(differences, node1, node2)
+        self.node1_name.setText(name1)
+        self.node2_name.setText(name2)
+        
+        # Create a copy to avoid modifying during iteration
+        if network_info and network_info in differences:
+            differences = [d for d in differences if d != network_info]
+        
+        # Set node icons
+        def set_node_icon(node, icon_label):
+            try:
+                icon = node.type().icon()
+                if icon:
+                    pixmap = hou.qt.createIcon(icon).pixmap(64, 64)
+                    icon_label.setPixmap(pixmap)
+                    icon_label.setScaledContents(True)
+            except (AttributeError, RuntimeError):
+                pass
+        
+        set_node_icon(node1, self.node1_icon)
+        set_node_icon(node2, self.node2_icon)
+        
+        # Update summaries
+        if differences:
+            # Get geometry data
+            geo1 = node1.geometry()
+            geo2 = node2.geometry()
+            
+            if geo1 and geo2:
+                # Get counts
+                points1 = len(geo1.points())
+                points2 = len(geo2.points())
+                prims1 = len(geo1.prims())
+                prims2 = len(geo2.prims())
+                
+                # Get point attributes
+                point_attrs1 = [attr.name() for attr in geo1.pointAttribs()]
+                point_attrs2 = [attr.name() for attr in geo2.pointAttribs()]
+                
+                # Get detail attributes
+                detail_attrs1 = [attr.name() for attr in geo1.globalAttribs()]
+                detail_attrs2 = [attr.name() for attr in geo2.globalAttribs()]
+                
+                # Get primitive attributes
+                prim_attrs1 = [attr.name() for attr in geo1.primAttribs()]
+                prim_attrs2 = [attr.name() for attr in geo2.primAttribs()]
+                
+                # Calculate differences
+                points_diff = points2 - points1
+                prims_diff = prims2 - prims1
+                point_attrs_diff = len(point_attrs2) - len(point_attrs1)
+                detail_attrs_diff = len(detail_attrs2) - len(detail_attrs1)
+                prim_attrs_diff = len(prim_attrs2) - len(prim_attrs1)
+                
+                # Only show differences in the summary
+                node1_summary = []
+                node2_summary = []
+                
+                # Helper function to add colored diff summary
+                def add_diff_summary(label, val1, val2, diff, node1_is_upstream, is_branch, node1_summary, node2_summary):
+                    if diff == 0:
+                        return
+                    
+                    if is_branch:
+                        node1_summary.append(f"<b>{label}:</b> {val1}")
+                        color = "green" if diff > 0 else "red"
+                        sign = "+" if diff > 0 else ""
+                        node2_summary.append(f"<b>{label}:</b> <span style='color:{color}'>{val2} ({sign}{diff})</span>")
+                    elif node1_is_upstream:
+                        node1_summary.append(f"<b>{label}:</b> {val1}")
+                        sign = "+" if diff > 0 else ""
+                        color = "green" if diff > 0 else "red"
+                        node2_summary.append(f"<b>{label}:</b> <span style='color:{color}'>{val2} ({sign}{diff})</span>")
+                    else:  # node2 is upstream
+                        node2_summary.append(f"<b>{label}:</b> {val2}")
+                        sign = "+" if diff < 0 else ""
+                        color = "green" if diff < 0 else "red"
+                        node1_summary.append(f"<b>{label}:</b> <span style='color:{color}'>{val1} ({sign}{-diff})</span>")
+                
+                # Apply to all metrics including Points
+                add_diff_summary("Points", points1, points2, points_diff, node1_is_upstream, is_branch, node1_summary, node2_summary)
+                
+                # Apply to all metrics
+                add_diff_summary("Primitives", prims1, prims2, prims_diff, node1_is_upstream, is_branch, node1_summary, node2_summary)
+                add_diff_summary("Point Attrs", len(point_attrs1), len(point_attrs2), point_attrs_diff, node1_is_upstream, is_branch, node1_summary, node2_summary)
+                add_diff_summary("Detail Attrs", len(detail_attrs1), len(detail_attrs2), detail_attrs_diff, node1_is_upstream, is_branch, node1_summary, node2_summary)
+                add_diff_summary("Prim Attrs", len(prim_attrs1), len(prim_attrs2), prim_attrs_diff, node1_is_upstream, is_branch, node1_summary, node2_summary)
+                
+                # Use already determined flow information (avoid duplicate calculation)
+                
+                # Format attributes with color coding
+                def format_attr_list(attrs1, attrs2, label, node1_is_upstream, is_branch):
+                    if not attrs1:
+                        return ""
+                    
+                    text = f"<b>{label}:</b> "
+                    for attr in sorted(attrs1):
+                        if attr in attrs2:
+                            text += f"{attr}, "
+                        else:
+                            if is_branch or node1_is_upstream:
+                                color = "red" if node1_is_upstream else "black"
+                                text += f"<span style='color:{color}'>{attr}</span>, "
+                            else:
+                                text += f"<span style='color:green'>{attr}</span>, "
+                    return text.rstrip(", ")
+                
+                # Apply to all attribute types
+                for attrs, label in [(point_attrs1, "Point attrs"), (detail_attrs1, "Detail attrs"), (prim_attrs1, "Prim attrs")]:
+                    formatted = format_attr_list(attrs, point_attrs2 if label == "Point attrs" else 
+                                                detail_attrs2 if label == "Detail attrs" else prim_attrs2, 
+                                                label, node1_is_upstream, is_branch)
+                    if formatted:
+                        node1_summary.append(formatted)
+                
+                for attrs, label in [(point_attrs2, "Point attrs"), (detail_attrs2, "Detail attrs"), (prim_attrs2, "Prim attrs")]:
+                    formatted = format_attr_list(attrs, point_attrs1 if label == "Point attrs" else 
+                                                detail_attrs1 if label == "Detail attrs" else prim_attrs1, 
+                                                label, node2_is_upstream, is_branch)
+                    if formatted:
+                        node2_summary.append(formatted)
+                
+                if detail_attrs1:
+                    detail_attrs_text = "<b>Detail attrs:</b> "
+                    for attr in sorted(detail_attrs1):
+                        if attr in detail_attrs2:
+                            # Attribute exists in both - normal color
+                            detail_attrs_text += attr + ", "
+                        else:
+                            # Attribute only in node 1
+                            if is_branch:
+                                # Branch streams - normal color for node 1
+                                detail_attrs_text += f"{attr}, "
+                            elif node1_is_upstream:
+                                # Removed in downstream - red
+                                detail_attrs_text += f"<span style='color:red'>{attr}</span>, "
+                            else:
+                                # Added in downstream - green
+                                detail_attrs_text += f"<span style='color:green'>{attr}</span>, "
+                    node1_summary.append(detail_attrs_text.rstrip(", "))
+                
+                if prim_attrs1:
+                    prim_attrs_text = "<b>Prim attrs:</b> "
+                    for attr in sorted(prim_attrs1):
+                        if attr in prim_attrs2:
+                            # Attribute exists in both - normal color
+                            prim_attrs_text += attr + ", "
+                        else:
+                            # Attribute only in node 1
+                            if is_branch:
+                                # Branch streams - normal color for node 1
+                                prim_attrs_text += f"{attr}, "
+                            elif node1_is_upstream:
+                                # Removed in downstream - red
+                                prim_attrs_text += f"<span style='color:red'>{attr}</span>, "
+                            else:
+                                # Added in downstream - green
+                                prim_attrs_text += f"<span style='color:green'>{attr}</span>, "
+                    node1_summary.append(prim_attrs_text.rstrip(", "))
+                
+                # For node 2
+                if point_attrs2:
+                    point_attrs_text = "<b>Point attrs:</b> "
+                    for attr in sorted(point_attrs2):
+                        if attr in point_attrs1:
+                            # Attribute exists in both - normal color
+                            point_attrs_text += attr + ", "
+                        else:
+                            # Attribute only in node 2
+                            if is_branch:
+                                # Branch streams - red for unique attributes in node 2
+                                point_attrs_text += f"<span style='color:red'>{attr}</span>, "
+                            elif node2_is_upstream:
+                                # Removed in downstream - red
+                                point_attrs_text += f"<span style='color:red'>{attr}</span>, "
+                            else:
+                                # Added in downstream - green
+                                point_attrs_text += f"<span style='color:green'>{attr}</span>, "
+                    node2_summary.append(point_attrs_text.rstrip(", "))
+                
+                if detail_attrs2:
+                    detail_attrs_text = "<b>Detail attrs:</b> "
+                    for attr in sorted(detail_attrs2):
+                        if attr in detail_attrs1:
+                            # Attribute exists in both - normal color
+                            detail_attrs_text += attr + ", "
+                        else:
+                            # Attribute only in node 2
+                            if is_branch:
+                                # Branch streams - red for unique attributes in node 2
+                                detail_attrs_text += f"<span style='color:red'>{attr}</span>, "
+                            elif node2_is_upstream:
+                                # Removed in downstream - red
+                                detail_attrs_text += f"<span style='color:red'>{attr}</span>, "
+                            else:
+                                # Added in downstream - green
+                                detail_attrs_text += f"<span style='color:green'>{attr}</span>, "
+                    node2_summary.append(detail_attrs_text.rstrip(", "))
+                
+                if prim_attrs2:
+                    prim_attrs_text = "<b>Prim attrs:</b> "
+                    for attr in sorted(prim_attrs2):
+                        if attr in prim_attrs1:
+                            # Attribute exists in both - normal color
+                            prim_attrs_text += attr + ", "
+                        else:
+                            # Attribute only in node 2
+                            if is_branch:
+                                # Branch streams - red for unique attributes in node 2
+                                prim_attrs_text += f"<span style='color:red'>{attr}</span>, "
+                            elif node2_is_upstream:
+                                # Removed in downstream - red
+                                prim_attrs_text += f"<span style='color:red'>{attr}</span>, "
+                            else:
+                                # Added in downstream - green
+                                prim_attrs_text += f"<span style='color:green'>{attr}</span>, "
+                    node2_summary.append(prim_attrs_text.rstrip(", "))
+                
+                # If no differences found in counts but we have attributes, that's fine
+                # If no attributes or differences at all, add a message
+                if not node1_summary:
+                    node1_summary.append("<b>No differences</b>")
+                if not node2_summary:
+                    node2_summary.append("<b>No differences</b>")
+                
+                self.node1_summary.setHtml("<br>".join(node1_summary))
+                self.node2_summary.setHtml("<br>".join(node2_summary))
+            elif geo1:
+                # Only node1 has geometry
+                node1_summary = [
+                    f"<b>Points:</b> {len(geo1.points())}",
+                    f"<b>Primitives:</b> {len(geo1.prims())}",
+                    f"<b>Attributes:</b> {len([attr.name() for attr in geo1.pointAttribs()])}"
+                ]
+                self.node1_summary.setHtml("<br>".join(node1_summary))
+                self.node2_summary.setHtml("<b>No geometry</b>")
+            elif geo2:
+                # Only node2 has geometry
+                node2_summary = [
+                    f"<b>Points:</b> {len(geo2.points())}",
+                    f"<b>Primitives:</b> {len(geo2.prims())}",
+                    f"<b>Attributes:</b> {len([attr.name() for attr in geo2.pointAttribs()])}"
+                ]
+                self.node1_summary.setHtml("<b>No geometry</b>")
+                self.node2_summary.setHtml("<br>".join(node2_summary))
+            else:
+                # Neither has geometry
+                self.node1_summary.setHtml("<b>No geometry</b>")
+                self.node2_summary.setHtml("<b>No geometry</b>")
+    
+    def compare_nodes(self):
+        node1_path = self.node1_input.text()
+        node2_path = self.node2_input.text()
+        
+        if not node1_path.strip() or not node2_path.strip():
+            hou.ui.displayMessage("Please enter both node paths", severity=hou.severityType.Warning)
+            return
+            
+        try:
+            node1 = hou.node(node1_path)
+            node2 = hou.node(node2_path)
+            
+            if not node1:
+                hou.ui.displayMessage(f"Node not found: {node1_path}", severity=hou.severityType.Error)
+                return
+            if not node2:
+                hou.ui.displayMessage(f"Node not found: {node2_path}", severity=hou.severityType.Error)
+                return
+            
+            # Store node references
+            self.node1 = node1
+            self.node2 = node2
+            
+            # Get the comparison data
+            differences = compare_node_data(node1, node2)
+            
+            # Check if nodes have different names but same attributes
+            if node1.name() != node2.name():
+                # Filter out differences that aren't about attributes
+                attr_differences = [d for d in differences if 
+                                   "attributes only in" not in d and 
+                                   "Attribute '" not in d and
+                                   "Point count differs" not in d and
+                                   "Primitive count differs" not in d]
+                
+                if len(attr_differences) == 0 or (len(attr_differences) == 1 and "No differences found" in attr_differences[0]):
+                    # Show a message
+                    hou.ui.displayMessage(f"Nodes '{node1.name()}' and '{node2.name()}' have identical attribute values", 
+                                         severity=hou.severityType.Message)
+            
+            # Update node info with differences
+            self.update_node_info(node1, node2, differences)
+            
+        except Exception as e:
+            hou.ui.displayMessage(f"Error: {str(e)}", severity=hou.severityType.Error)
+
+def show_compare_dialog():
+    """
+    Show the enhanced compare nodes dialog
+    """
+    # Get Houdini main window as parent
+    parent = hou.qt.mainWindow()
+    dialog = CompareNodesDialog(parent)
+    dialog.show()
+
+# Call this function to show the dialog
+if __name__ == "__main__":
+    show_compare_dialog()
