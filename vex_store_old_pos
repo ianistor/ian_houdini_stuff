@@ -1,0 +1,5 @@
+v@pos = v@P; (store it in a different att)
+
+// in a different wrangle down the line 
+
+v@P = v@pos; (restores it)
