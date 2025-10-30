@@ -1,3 +1,6 @@
+# no longer needed as Houdini 21 has this built in.
+
+
 import hou
 import numpy as np
 from PySide2 import QtWidgets, QtCore, QtGui
