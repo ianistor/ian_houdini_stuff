@@ -1,0 +1,17 @@
+float floor_y = chf("floor_y");
+float squash = chf("squash");
+float bulge_amp = chf("bulge_amp");
+float bulge_range = chf("bulge_range"); 
+
+// Flatten the contact patch
+if (@P.y < floor_y)
+{
+    @P.y = fit(@P.y, floor_y - squash, floor_y, floor_y - squash * 0.3, floor_y);
+}
+
+// Bulge sidewalls outward based on proximity to contact patch
+float proximity = 1 - fit(@P.y, floor_y, floor_y + bulge_range, 0, 1);
+proximity = clamp(proximity, 0, 1);
+
+@P.x += @N.x * proximity * bulge_amp;
+@P.z += @N.z * proximity * bulge_amp;
