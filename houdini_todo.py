@@ -294,17 +294,25 @@ class CommentDialog(QtWidgets.QDialog):
         cursor = self.textedit.textCursor()
         cursor.insertImage(fmt)
         cursor.insertText('\n')
+        self.textedit.setTextCursor(cursor)
+        self.textedit.ensureCursorVisible()
+        self.textedit.viewport().update()
+        QtWidgets.QApplication.processEvents()
 
     def attachFromFile(self):
         start_dir = os.path.dirname(hou.hipFile.path()) if hou.hipFile.path() else os.path.expanduser('~')
         filePath, _ = QtWidgets.QFileDialog.getOpenFileName(self, 'Choose Image', start_dir, 'Images (*.png *.jpg *.jpeg *.bmp)')
         if not filePath:
             return
-        dest_dir = self._ensure_screens_dir()
-        _, ext = os.path.splitext(filePath)
-        dest = os.path.join(dest_dir, f"todo_{self.current_index}_{int(__import__('time').time())}{ext.lower()}")
-        shutil.copy2(filePath, dest)
-        self._insert_image_from_path(dest)
+        try:
+            dest_dir = self._ensure_screens_dir()
+            _, ext = os.path.splitext(filePath)
+            stamp = int(__import__('time').time() * 1000)
+            dest = os.path.join(dest_dir, f"todo_{self.current_index}_{stamp}{ext.lower()}")
+            shutil.copy2(filePath, dest)
+            self._insert_image_from_path(dest)
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "Attach failed", str(exc))
 
     def pasteFromClipboard(self):
         cb = QtGui.QGuiApplication.clipboard()
@@ -451,5 +459,15 @@ class ImageAnnotatorDialog(QtWidgets.QDialog):
 
 app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 app.setStyleSheet(css)
-todo_app = TodoListApp()
-todo_app.show()
+try:
+    if 'todo_app' in globals() and todo_app is not None and todo_app.isVisible():
+        todo_app.raise_()
+        todo_app.activateWindow()
+    else:
+        todo_app = TodoListApp()
+        todo_app.setWindowFlags(todo_app.windowFlags() | QtCore.Qt.Window)
+        todo_app.show()
+except Exception:
+    todo_app = TodoListApp()
+    todo_app.setWindowFlags(todo_app.windowFlags() | QtCore.Qt.Window)
+    todo_app.show()
