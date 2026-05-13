@@ -233,6 +233,16 @@ class CommentDialog(QtWidgets.QDialog):
         self.current_index = index
         layout = QtWidgets.QVBoxLayout(self)
 
+        toolbar = QtWidgets.QHBoxLayout()
+        attach_btn = QtWidgets.QPushButton('Attach Image')
+        paste_btn = QtWidgets.QPushButton('Paste Image (Ctrl+V)')
+        attach_btn.clicked.connect(self.attachFromFile)
+        paste_btn.clicked.connect(self.pasteFromClipboard)
+        toolbar.addWidget(attach_btn)
+        toolbar.addWidget(paste_btn)
+        toolbar.addStretch()
+        layout.addLayout(toolbar)
+
         self.textedit = QtWidgets.QTextEdit()
         self.textedit.setAcceptRichText(True)
         self.textedit.setHtml(initial_html or '')
@@ -248,6 +258,68 @@ class CommentDialog(QtWidgets.QDialog):
         buttons.addWidget(save_button)
         buttons.addWidget(cancel_button)
         layout.addLayout(buttons)
+        self.installEventFilter(self)
+
+    def eventFilter(self, obj, event):
+        if event.type() == QtCore.QEvent.KeyPress:
+            if event.key() == QtCore.Qt.Key_V and (event.modifiers() & QtCore.Qt.ControlModifier):
+                return self.pasteFromClipboard()
+        return super().eventFilter(obj, event)
+
+    def _ensure_screens_dir(self):
+        if todo_app.todo_file:
+            base = os.path.dirname(todo_app.todo_file)
+        else:
+            base = os.path.expanduser('~')
+        dest_dir = os.path.join(base, '.todo_screens')
+        os.makedirs(dest_dir, exist_ok=True)
+        return dest_dir
+
+    def _insert_image_from_path(self, path):
+        img = QtGui.QImage(path)
+        if img.isNull():
+            raise RuntimeError(f'Invalid image file: {path}')
+        doc = self.textedit.document()
+        url = QtCore.QUrl.fromLocalFile(path)
+        doc.addResource(QtGui.QTextDocument.ImageResource, url, img)
+
+        fmt = QtGui.QTextImageFormat()
+        fmt.setName(url.toString())
+        avail_w = max(120, self.textedit.viewport().width() - 40)
+        width = min(avail_w, img.width())
+        scale = width / img.width() if img.width() else 1.0
+        fmt.setWidth(width)
+        fmt.setHeight(img.height() * scale)
+
+        cursor = self.textedit.textCursor()
+        cursor.insertImage(fmt)
+        cursor.insertText('\n')
+
+    def attachFromFile(self):
+        start_dir = os.path.dirname(hou.hipFile.path()) if hou.hipFile.path() else os.path.expanduser('~')
+        filePath, _ = QtWidgets.QFileDialog.getOpenFileName(self, 'Choose Image', start_dir, 'Images (*.png *.jpg *.jpeg *.bmp)')
+        if not filePath:
+            return
+        dest_dir = self._ensure_screens_dir()
+        _, ext = os.path.splitext(filePath)
+        dest = os.path.join(dest_dir, f"todo_{self.current_index}_{int(__import__('time').time())}{ext.lower()}")
+        shutil.copy2(filePath, dest)
+        self._insert_image_from_path(dest)
+
+    def pasteFromClipboard(self):
+        cb = QtGui.QGuiApplication.clipboard()
+        md = cb.mimeData()
+        if not md.hasImage():
+            return False
+        img = cb.image()
+        if img.isNull():
+            return False
+        dest_dir = self._ensure_screens_dir()
+        dest = os.path.join(dest_dir, f"todo_{self.current_index}_{int(__import__('time').time())}.png")
+        if not img.save(dest):
+            return False
+        self._insert_image_from_path(dest)
+        return True
 
     def _register_images_from_html(self, html):
         import re
@@ -271,7 +343,25 @@ class CommentDialog(QtWidgets.QDialog):
         todo_app.todo_data[self.current_index]['comment_html'] = html
         todo_app.todo_data[self.current_index]['comment'] = self.textedit.toPlainText()
         todo_app.todo_data[self.current_index]['content'] = [{'type': 'html', 'html': html}]
+        first_img = None
+        doc = self.textedit.document()
+        block = doc.begin()
+        while block.isValid() and first_img is None:
+            it = block.begin()
+            while not it.atEnd():
+                frag = it.fragment()
+                if frag.isValid() and frag.charFormat().isImageFormat():
+                    img_fmt = QtGui.QTextImageFormat(frag.charFormat())
+                    p = QtCore.QUrl(img_fmt.name()).toLocalFile()
+                    if p and os.path.exists(p):
+                        first_img = p
+                        break
+                it += 1
+            block = block.next()
+        if first_img:
+            todo_app.todo_data[self.current_index]['screenshot'] = first_img
         todo_app.saveTodoList()
+        todo_app.populateTodoList()
         super().accept()
 
 
