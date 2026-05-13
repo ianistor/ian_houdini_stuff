@@ -309,17 +309,42 @@ class CommentDialog(QtWidgets.QDialog):
     def pasteFromClipboard(self):
         cb = QtGui.QGuiApplication.clipboard()
         md = cb.mimeData()
-        if not md.hasImage():
-            return False
-        img = cb.image()
-        if img.isNull():
-            return False
         dest_dir = self._ensure_screens_dir()
-        dest = os.path.join(dest_dir, f"todo_{self.current_index}_{int(__import__('time').time())}.png")
-        if not img.save(dest):
-            return False
-        self._insert_image_from_path(dest)
-        return True
+        stamp = int(__import__('time').time())
+
+        # Prefer local image file urls when available (often the highest-fidelity source).
+        if md.hasUrls():
+            for url in md.urls():
+                if not url.isLocalFile():
+                    continue
+                src = url.toLocalFile()
+                if not os.path.exists(src):
+                    continue
+                ext = os.path.splitext(src)[1].lower()
+                if ext not in {'.png', '.jpg', '.jpeg', '.bmp', '.tif', '.tiff', '.webp'}:
+                    continue
+                dest = os.path.join(dest_dir, f"todo_{self.current_index}_{stamp}{ext}")
+                shutil.copy2(src, dest)
+                self._insert_image_from_path(dest)
+                return True
+
+        # Fallback: paste raster image bytes from clipboard.
+        if md.hasImage():
+            pix = cb.pixmap()
+            if pix.isNull():
+                img = cb.image()
+                if img.isNull():
+                    return False
+                pix = QPixmap.fromImage(img)
+            if pix.isNull():
+                return False
+            dest = os.path.join(dest_dir, f"todo_{self.current_index}_{stamp}.png")
+            if not pix.save(dest, "PNG"):
+                return False
+            self._insert_image_from_path(dest)
+            return True
+
+        return False
 
     def _register_images_from_html(self, html):
         import re
